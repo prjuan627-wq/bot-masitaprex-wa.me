@@ -5,7 +5,9 @@ import axios from "axios";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
-import { WAMessageStubType } from "@whiskeysockets/baileys";
+// Importar solo WAMessageStubType del paquete principal de Baileys
+// El resto se carga dinámicamente para evitar problemas de compatibilidad al iniciar
+import { WAMessageStubType } from "@whiskeysockets/baileys"; 
 
 // --- CONFIGURACIÓN INICIAL ---
 dotenv.config();
@@ -15,9 +17,8 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 // --- MODULARIDAD: Almacenamiento Global para Clientes (¡CRUCIAL!) ---
-// En una aplicación real, esto iría en una Base de Datos (Postgres, MongoDB, etc.)
 const sessions = new Map();
-const userStates = new Map(); // Para un historial de conversación más avanzado
+const userStates = new Map(); 
 const businessConfigs = new Map();
 
 // --- CONFIGURACIÓN POR DEFECTO DEL NEGOCIO (SIMULANDO DB) ---
@@ -26,29 +27,25 @@ const DEFAULT_CLIENT_ID = "CLIENTE_CONSULTA_PE_001";
 // Estructura de un Módulo de Negocio (Business Module)
 class BusinessModule {
     constructor(id, keywords, responseType, responseContent, mediaUrl = null, aiPrompt = null) {
-        this.id = id; // ID ÚNICO para edición (ej: MOD_PAGO_YAPE)
+        this.id = id; 
         this.keywords = Array.isArray(keywords) ? keywords.map(k => k.toLowerCase().trim()) : [];
-        this.responseType = responseType; // 'TEXT', 'IMAGE', 'QR_PAYMENT', 'MANUAL_FORWARD', 'IMAGE_GENERATION'
-        this.responseContent = responseContent; // El texto o la plantilla
-        this.mediaUrl = mediaUrl; // URL del archivo o QR
-        this.aiPrompt = aiPrompt; // Prompt específico si la respuesta necesita lógica de IA
+        this.responseType = responseType; 
+        this.responseContent = responseContent; 
+        this.mediaUrl = mediaUrl; 
+        this.aiPrompt = aiPrompt; 
     }
 }
 
 // Inicialización de la configuración del cliente (simulando una carga desde la DB)
 const initialConfig = {
-    // ID único para el cliente
     client_id: DEFAULT_CLIENT_ID,
-    // Control de IA
     activeAI: process.env.DEFAULT_AI || "gemini",
     openai_vision_enabled: true,
     openai_image_gen_enabled: true,
-    // Mensajería
     botPaused: false,
     welcomeMessage: "¡Hola! ¿Cómo puedo ayudarte hoy? Soy tu asistente virtual de negocios, listo para resolver tus dudas.",
     adminNumber: process.env.ADMIN_NUMBER,
-    webhookUrl: process.env.BUSINESS_WEBHOOK_URL || 'http://your-admin-panel.com/webhook/incoming', // Webhook para respuestas manuales
-    // Prompts del Core de IA (editable por el cliente)
+    webhookUrl: process.env.BUSINESS_WEBHOOK_URL || 'http://your-admin-panel.com/webhook/incoming',
     GEMINI_CORE_PROMPT: `
         Eres un asistente de negocios profesional, carismático y experto.
         Tu rol es responder a las consultas del usuario basándote en la información que tienes.
@@ -59,7 +56,6 @@ const initialConfig = {
     `,
     OPENAI_CORE_PROMPT: "",
     COHERE_CORE_PROMPT: "",
-    // Módulos de Respuestas (EDITABLES POR ID)
     modules: [
         new BusinessModule(
             "MOD_COMPRA_CREDITOS",
@@ -73,17 +69,17 @@ const initialConfig = {
         ),
         new BusinessModule(
             "MOD_PAGO_YAPE",
-            ["pagar 10", "pagar 50", "pagar 100"], // Las keywords deben coincidir con la respuesta del MOD_COMPRA
-            "QR_PAYMENT", // Nuevo tipo para manejo de QR
+            ["pagar 10", "pagar 50", "pagar 100"],
+            "QR_PAYMENT", 
             `¡Pago en proceso! Escanea el QR para S/{{monto}} ({{creditos}} Créditos).
             Titular: José R. Cubas.
             *Una vez pagado, envía el comprobante y tu correo registrado.*`,
-            "https://i.imgur.com/your-qr-image.png" // URL de imagen del QR (editable)
+            "https://i.imgur.com/your-qr-image.png"
         ),
         new BusinessModule(
             "MOD_COMPROBANTE_RECIBIDO",
             ["comprobante", "ya hice el pago", "pague pero no me llega"],
-            "MANUAL_FORWARD", // Nuevo tipo para enviar a un humano
+            "MANUAL_FORWARD", 
             `¡Comprobante recibido! Lo he enviado a nuestro equipo para la activación inmediata de tus créditos. Te avisaremos en cuanto esté listo. ⏳`,
         ),
         new BusinessModule(
@@ -98,7 +94,7 @@ const initialConfig = {
         new BusinessModule(
             "MOD_SIN_RESPUESTA_IA",
             ["no me funciona", "error en el sistema", "no pude"],
-            "MANUAL_FORWARD", // Reenvío a soporte si la IA falla
+            "MANUAL_FORWARD", 
             `Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo en unos minutos para darte una solución. Estamos en ello.`,
         ),
         new BusinessModule(
@@ -108,7 +104,6 @@ const initialConfig = {
             `¡Nos encanta que te encante! Si quieres compartir el poder, aquí está el link: [Link]. Gracias por ser parte de los que sí resuelven.`,
         ),
     ],
-    // Datos de pago (editables por el cliente)
     paymentData: {
         YAPE_NUMBER: "929008609",
         TITULAR: "José R. Cubas",
@@ -139,12 +134,11 @@ ${message}
 *Atención inmediata requerida.*`;
 
     for (const admin of adminNumbers) {
-        // Enviar el mensaje a los administradores
         await sock.sendMessage(admin, { text: forwardedMessage });
     }
 };
 
-// ------------------- Importar Baileys -------------------
+// ------------------- Importar Baileys (Asegurar la carga) -------------------
 let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
@@ -155,7 +149,7 @@ try {
   downloadContentFromMessage = baileysModule.downloadContentFromMessage;
   get = baileysModule.get
 } catch (err) {
-  console.error("Error importando Baileys:", err.message || err);
+  console.error("Error importando Baileys. Asegúrate de tener la dependencia instalada:", err.message || err);
 }
 
 // ------------------- LÓGICA DE I.A. -------------------
@@ -166,17 +160,14 @@ const consumirGemini = async (prompt, clientId) => {
     try {
         if (!process.env.GEMINI_API_KEY) return "Error: API Key de Gemini no configurada.";
         
-        const model = "gemini-2.5-flash"; // Usando 2.5-flash para el Core
+        const model = "gemini-2.5-flash"; 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
         
         const fullPrompt = `${config.GEMINI_CORE_PROMPT}\nUsuario: ${prompt}`;
         
         const body = {
             contents: [{ parts: [{ text: fullPrompt }] }],
-            config: {
-                 // Añadir configuración de temperatura para un tono más carismático
-                temperature: 0.7 
-            }
+            config: { temperature: 0.7 }
         };
         
         const response = await axios.post(url, body, { timeout: 20000 });
@@ -189,36 +180,29 @@ const consumirGemini = async (prompt, clientId) => {
     }
 };
 
-// 2. OPENAI: Visión (Comprobantes) y Generación de Imágenes (Requisito)
+// 2. OPENAI: Visión (Comprobantes) y Generación de Imágenes (MOCKS)
 const sendToOpenAIVision = async (imageBuffer, clientId) => {
     const config = getClientConfig(clientId);
     if (!config.openai_vision_enabled || !process.env.OPENAI_API_KEY) {
         return "El análisis de imágenes está desactivado. He reenviado el mensaje a soporte.";
     }
-    
-    // Implementar la llamada a la API de OpenAI (GPT-4 Vision) o Gemini Vision aquí.
-    // **NOTA: Se mantiene el MOCK para que el código sea funcional sin la API key de OpenAI.**
+    // MOCK
     return "Comprobante de pago"; 
 };
 
-// 3. OPENAI: Generación de Imágenes (Requisito)
 const generateOpenAIImage = async (prompt) => {
-    // Implementar la llamada a la API de DALL-E (OpenAI) aquí.
-    // **NOTA: Se mantiene el MOCK para que el código sea funcional sin la API key de OpenAI.**
+    // MOCK
     return "https://i.imgur.com/dalle-generated-image.jpg";
 };
 
 
 // ------------------- LÓGICA MODULAR DE NEGOCIO -------------------
 
-// Función para buscar el módulo coincidente
 function findBusinessModule(text, config) {
     const lowerCaseText = text.toLowerCase().trim();
     
-    // Búsqueda en los módulos de respuesta
     for (const module of config.modules) {
         if (module.keywords.some(keyword => lowerCaseText.includes(keyword))) {
-            // Lógica especial para el módulo de pago (dinámico)
             if (module.id === "MOD_PAGO_YAPE") {
                 const parts = lowerCaseText.split(' ');
                 const amount = parts.find(p => !isNaN(parseInt(p)));
@@ -234,17 +218,14 @@ function findBusinessModule(text, config) {
 
 // ------------------- FUNCIONALIDAD DE PLATAFORMA (CRUD) -------------------
 
-// Endpoint: Crear/Actualizar Configuración de Cliente (Simula la DB)
 app.post("/api/admin/config/save/:clientId", (req, res) => {
     const { clientId } = req.params;
     const newConfig = req.body;
     
-    // Validar que se reciba el client_id correcto en el cuerpo
     if (newConfig.client_id !== clientId) {
         return res.status(400).json({ ok: false, error: "El client_id en la URL y el cuerpo no coinciden." });
     }
     
-    // Reconstruir los módulos como objetos BusinessModule
     if (newConfig.modules && Array.isArray(newConfig.modules)) {
         newConfig.modules = newConfig.modules.map(mod => new BusinessModule(
             mod.id, mod.keywords, mod.responseType, mod.responseContent, mod.mediaUrl, mod.aiPrompt
@@ -255,7 +236,6 @@ app.post("/api/admin/config/save/:clientId", (req, res) => {
     res.json({ ok: true, message: `Configuración para ${clientId} guardada con éxito.`, config: businessConfigs.get(clientId) });
 });
 
-// Endpoint: Obtener Configuración de Cliente
 app.get("/api/admin/config/get/:clientId", (req, res) => {
     const { clientId } = req.params;
     const config = getClientConfig(clientId);
@@ -263,7 +243,6 @@ app.get("/api/admin/config/get/:clientId", (req, res) => {
     res.json({ ok: true, config });
 });
 
-// Endpoint: Envío Masivo Manual (CON ID DE RESPUESTA ÚNICO)
 app.post("/api/admin/sendbulk/:clientId", async (req, res) => {
     const { sessionId } = req.query;
     const { numbers, message, mediaUrl, mediaType } = req.body;
@@ -281,8 +260,6 @@ app.post("/api/admin/sendbulk/:clientId", async (req, res) => {
     let sentCount = 0;
     
     for (const number of numberList) {
-        // Añadir el ID de respuesta único a la respuesta del bot.
-        // ESTO ES CRUCIAL PARA LA LÓGICA DE RESPUESTA MANUAL
         const manualMessageText = `${message}\n\n###BUSINESS_REPLY_ID###\n${config.client_id}`;
         
         try {
@@ -346,13 +323,17 @@ const createAndConnectSocket = async (sessionId, clientId) => {
         if (connection === "close") {
             const reason = lastDisconnect?.error?.output?.statusCode;
             sessions.get(sessionId).status = "disconnected";
+            // Lógica de reconexión. Esto es crucial.
             if (reason !== DisconnectReason.loggedOut) {
                 console.log("Reconectando:", sessionId);
-                setTimeout(() => createAndConnectSocket(sessionId, clientId), 2000);
+                // Usamos un pequeño delay para evitar el loop infinito si el error es persistente
+                setTimeout(() => createAndConnectSocket(sessionId, clientId), 5000); 
             } else {
-                console.log("Sesión cerrada por desconexión del usuario.");
+                console.log("Sesión cerrada por desconexión del usuario (Logged Out).");
                 sessions.delete(sessionId);
-                fs.rmSync(sessionDir, { recursive: true, force: true });
+                // No borramos la carpeta de sesión aquí para evitar errores de FS si el proceso está inestable.
+                // La eliminación debe hacerse solo a través del endpoint de reset.
+                // fs.rmSync(sessionDir, { recursive: true, force: true });
             }
         }
     });
@@ -377,8 +358,7 @@ const createAndConnectSocket = async (sessionId, clientId) => {
             let mediaType = null;
             let mediaUrl = null;
 
-            // --- LÓGICA DE RESPUESTA A MENSAJE MANUAL (ID ÚNICO) ---
-            // ESTA SECCIÓN DEBE PERMANECER ACTIVA 24/7
+            // --- LÓGICA DE RESPUESTA A MENSAJE MANUAL (VÍNCULO 24/7) ---
             const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
             if (quotedMessage) {
                 const originalMessageText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text;
@@ -386,23 +366,19 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                     
                     const replyId = originalMessageText.split("###BUSINESS_REPLY_ID###\n")[1]?.trim();
                     if (replyId !== config.client_id) {
-                         // Evitar que un cliente responda a un mensaje de otro negocio
                         console.log(`Respuesta manual ignorada: ID de cliente incorrecto: ${replyId}`);
                         continue; 
                     }
                     
                     let content = null;
-                    // Lógica para obtener el contenido de la respuesta
                     if (msg.message.conversation) content = msg.message.conversation;
                     else if (msg.message.extendedTextMessage) content = msg.message.extendedTextMessage.text;
                     else if (msg.message.imageMessage) {
                         mediaType = "image";
-                        // NOTA: En un entorno productivo, aquí subirías el archivo a un servicio (S3, GCS)
                         mediaUrl = "http://your-server.com/uploaded-image.png"; 
                         content = `Respuesta con Imagen: ${msg.message.imageMessage.caption || 'sin pie'}`;
                     } else if (msg.message.documentMessage) {
                         mediaType = "document";
-                        // NOTA: En un entorno productivo, aquí subirías el archivo a un servicio (S3, GCS)
                         mediaUrl = "http://your-server.com/uploaded-pdf.pdf";
                         content = `Respuesta con Archivo: ${msg.message.documentMessage.fileName || 'sin nombre'}`;
                     }
@@ -414,11 +390,10 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                         mediaUrl: mediaUrl,
                         mediaType: mediaType,
                         timestamp: Date.now(),
-                        originalQuotedMessage: originalMessageText.split("\n\n###BUSINESS_REPLY_ID###")[0] // Para el contexto
+                        originalQuotedMessage: originalMessageText.split("\n\n###BUSINESS_REPLY_ID###")[0] 
                     };
                     
                     try {
-                        // Notificar al Panel de Administración (WebHook) para cerrar el ciclo
                         await axios.post(config.webhookUrl, payload);
                         await sock.sendMessage(from, { text: "¡Recibido! Tu respuesta ha sido procesada y se ha notificado a soporte." });
                     } catch (error) {
@@ -426,7 +401,7 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                         await sock.sendMessage(from, { text: "Error: No pudimos notificar al panel. Reenvía tu mensaje a un administrador." });
                     }
                     
-                    continue; // Detener el procesamiento del mensaje normal (IA/Módulos)
+                    continue; 
                 }
             }
             // --- FIN LÓGICA DE RESPUESTA MANUAL ---
@@ -439,10 +414,8 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                 let bufferArray = [];
                 for await (const chunk of imageBuffer) bufferArray.push(chunk);
                 const buffer = Buffer.concat(bufferArray);
-                // Usar OpenAI o Gemini Vision para analizar la imagen
                 body = await sendToOpenAIVision(buffer, config.client_id); 
             } else if (msg.message.audioMessage) {
-                // MOCK de transcripción de audio
                 body = "Audio transcrito: 'Quiero comprar créditos'"; 
             } else {
                 await sock.sendMessage(from, { text: "Solo puedo procesar texto, imágenes y audios." });
@@ -450,10 +423,9 @@ const createAndConnectSocket = async (sessionId, clientId) => {
             }
             
             if (!body) continue;
-
             if (config.botPaused) return;
 
-            // --- LÓGICA DE MÓDULOS DE NEGOCIO ---
+            // --- LÓGICA DE MÓDULOS DE NEGOCIO Y CORE IA ---
             const matchedModuleData = findBusinessModule(body, config);
             let reply = null;
 
@@ -463,29 +435,19 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                 switch (module.responseType) {
                     case "QR_PAYMENT":
                         const packageData = config.paymentData.PACKAGES[amount];
-                        if (!packageData) {
-                            reply = "No encontré un paquete con ese monto. Por favor, elige uno de la lista.";
-                            break;
-                        }
+                        if (!packageData) { reply = "No encontré un paquete con ese monto."; break; }
                         const qrModule = config.modules.find(m => m.id === packageData.qr_url_id);
-                        if (!qrModule || !qrModule.mediaUrl) {
-                            reply = "Error: Módulo de QR mal configurado. Contacta a soporte.";
-                            break;
-                        }
+                        if (!qrModule || !qrModule.mediaUrl) { reply = "Error: Módulo de QR mal configurado."; break; }
 
                         try {
                             const qrImageBuffer = await axios.get(qrModule.mediaUrl, { responseType: 'arraybuffer' });
                             const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
-
-                            const textMessage = module.responseContent
-                                .replace('{{monto}}', amount)
-                                .replace('{{creditos}}', packageData.credits);
-                                
+                            const textMessage = module.responseContent.replace('{{monto}}', amount).replace('{{creditos}}', packageData.credits);
                             await sock.sendMessage(from, { image: qrImage, caption: textMessage });
                             continue;
                         } catch (error) {
                             console.error("Error al enviar QR:", error.message);
-                            reply = "Hubo un error al generar el QR de pago. Por favor, inténtalo de nuevo.";
+                            reply = "Hubo un error al generar el QR de pago.";
                         }
                         break;
 
@@ -500,7 +462,6 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                         
                     case "IMAGE_GENERATION":
                          if (config.openai_image_gen_enabled) {
-                             // Llama a la generación de imagen (MOCK)
                              const imageUrl = await generateOpenAIImage(module.aiPrompt || body);
                              await sock.sendMessage(from, { image: { url: imageUrl }, caption: module.responseContent });
                              continue;
@@ -512,13 +473,13 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                 }
             }
             
-            // Si no hay respuesta modular, usa el Core de IA (Gemini)
+            // Core de IA (Gemini) si no hay respuesta modular
             if (!reply) {
                 await sock.sendPresenceUpdate("composing", from);
                 reply = await consumirGemini(body, config.client_id);
             }
             
-            // Si la IA falla, usar la respuesta de soporte por defecto
+            // Respuesta de soporte si la IA falla
             if (!reply || reply.includes("temporalmente inactiva")) {
                 const supportModule = config.modules.find(m => m.id === "MOD_SIN_RESPUESTA_IA");
                 if (supportModule) {
@@ -544,10 +505,9 @@ app.get("/api/health", (req, res) => {
     res.json({ ok: true, status: "alive", time: new Date().toISOString() });
 });
 
-// Endpoint de creación de sesión (requiere CLIENT_ID)
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
-  const clientId = req.query.clientId || DEFAULT_CLIENT_ID; // Nuevo parámetro
+  const clientId = req.query.clientId || DEFAULT_CLIENT_ID; 
   if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId, clientId);
   res.json({ ok: true, sessionId, clientId });
 });
@@ -568,6 +528,7 @@ app.get("/api/session/reset", async (req, res) => {
             if (sock) await sock.end();
             sessions.delete(sessionId);
         }
+        // Eliminación física del archivo de la sesión
         if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
         res.json({ ok: true, message: "Sesión eliminada. Vuelve a crearla para obtener QR." });
     } catch (err) {
@@ -579,8 +540,3 @@ app.get("/", (req, res) => res.json({ ok: true, msg: "Asistente Empresarial Modu
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
-
-// --- EJECUCIÓN INICIAL (OPCIONAL) ---
-// Para iniciar la sesión por defecto automáticamente
-// createAndConnectSocket(`main_${DEFAULT_CLIENT_ID}`, DEFAULT_CLIENT_ID).catch(console.error);
-
