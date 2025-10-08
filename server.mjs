@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { WAMessageStubType } from "@whiskeysockets/baileys";
 
+// --- CONFIGURACIÓN INICIAL ---
 dotenv.config();
 
 const app = express();
@@ -15,15 +16,11 @@ app.use(express.json());
 
 // --- MODULARIDAD: Almacenamiento Global para Clientes (¡CRUCIAL!) ---
 // En una aplicación real, esto iría en una Base de Datos (Postgres, MongoDB, etc.)
-// sessions: Sesiones activas de WhatsApp
-// userStates: Estado de la conversación por número (para historial y contador)
-// businessConfigs: ¡NUEVO! Configuración única para el negocio que alquila el bot (se personaliza por Client ID)
 const sessions = new Map();
-const userStates = new Map();
+const userStates = new Map(); // Para un historial de conversación más avanzado
 const businessConfigs = new Map();
 
 // --- CONFIGURACIÓN POR DEFECTO DEL NEGOCIO (SIMULANDO DB) ---
-// Cada instancia de bot alquilado tendrá su propio "CLIENT_ID" que cargará esta estructura
 const DEFAULT_CLIENT_ID = "CLIENTE_CONSULTA_PE_001"; 
 
 // Estructura de un Módulo de Negocio (Business Module)
@@ -31,7 +28,7 @@ class BusinessModule {
     constructor(id, keywords, responseType, responseContent, mediaUrl = null, aiPrompt = null) {
         this.id = id; // ID ÚNICO para edición (ej: MOD_PAGO_YAPE)
         this.keywords = Array.isArray(keywords) ? keywords.map(k => k.toLowerCase().trim()) : [];
-        this.responseType = responseType; // 'TEXT', 'IMAGE', 'QR_PAYMENT', 'MANUAL_FORWARD'
+        this.responseType = responseType; // 'TEXT', 'IMAGE', 'QR_PAYMENT', 'MANUAL_FORWARD', 'IMAGE_GENERATION'
         this.responseContent = responseContent; // El texto o la plantilla
         this.mediaUrl = mediaUrl; // URL del archivo o QR
         this.aiPrompt = aiPrompt; // Prompt específico si la respuesta necesita lógica de IA
@@ -142,6 +139,7 @@ ${message}
 *Atención inmediata requerida.*`;
 
     for (const admin of adminNumbers) {
+        // Enviar el mensaje a los administradores
         await sock.sendMessage(admin, { text: forwardedMessage });
     }
 };
@@ -198,16 +196,15 @@ const sendToOpenAIVision = async (imageBuffer, clientId) => {
         return "El análisis de imágenes está desactivado. He reenviado el mensaje a soporte.";
     }
     
-    // Usar OpenAI para visión (o Gemini Vision si se prefiere)
-    // Aquí implementaremos la llamada a la API de OpenAI (GPT-4 Vision)
-    // Por simplicidad, se deja el mock de la respuesta clave.
+    // Implementar la llamada a la API de OpenAI (GPT-4 Vision) o Gemini Vision aquí.
+    // **NOTA: Se mantiene el MOCK para que el código sea funcional sin la API key de OpenAI.**
     return "Comprobante de pago"; 
 };
 
 // 3. OPENAI: Generación de Imágenes (Requisito)
 const generateOpenAIImage = async (prompt) => {
-    // Aquí se implementaría la llamada a la API de DALL-E (OpenAI)
-    // Por ahora, devolvemos un mock de URL
+    // Implementar la llamada a la API de DALL-E (OpenAI) aquí.
+    // **NOTA: Se mantiene el MOCK para que el código sea funcional sin la API key de OpenAI.**
     return "https://i.imgur.com/dalle-generated-image.jpg";
 };
 
@@ -285,6 +282,7 @@ app.post("/api/admin/sendbulk/:clientId", async (req, res) => {
     
     for (const number of numberList) {
         // Añadir el ID de respuesta único a la respuesta del bot.
+        // ESTO ES CRUCIAL PARA LA LÓGICA DE RESPUESTA MANUAL
         const manualMessageText = `${message}\n\n###BUSINESS_REPLY_ID###\n${config.client_id}`;
         
         try {
@@ -309,8 +307,6 @@ app.post("/api/admin/sendbulk/:clientId", async (req, res) => {
 // ------------------- CORE DEL WHATSAPP BOT -------------------
 
 const createAndConnectSocket = async (sessionId, clientId) => {
-    // ... [Lógica de conexión Baileys simplificada] ...
-    
     const config = getClientConfig(clientId);
     if (!makeWASocket) throw new Error("Baileys no disponible");
 
@@ -330,7 +326,7 @@ const createAndConnectSocket = async (sessionId, clientId) => {
 
     sock.ev.on("creds.update", saveCreds);
     
-    // ... [Manejo de conexión, QR y desconexión] ...
+    // --- Manejo de Conexión, QR y Desconexión ---
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -382,6 +378,7 @@ const createAndConnectSocket = async (sessionId, clientId) => {
             let mediaUrl = null;
 
             // --- LÓGICA DE RESPUESTA A MENSAJE MANUAL (ID ÚNICO) ---
+            // ESTA SECCIÓN DEBE PERMANECER ACTIVA 24/7
             const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
             if (quotedMessage) {
                 const originalMessageText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text;
@@ -400,11 +397,12 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                     else if (msg.message.extendedTextMessage) content = msg.message.extendedTextMessage.text;
                     else if (msg.message.imageMessage) {
                         mediaType = "image";
-                        // Aquí deberías tener una función para subir la imagen a S3/GCS y obtener la URL
+                        // NOTA: En un entorno productivo, aquí subirías el archivo a un servicio (S3, GCS)
                         mediaUrl = "http://your-server.com/uploaded-image.png"; 
                         content = `Respuesta con Imagen: ${msg.message.imageMessage.caption || 'sin pie'}`;
                     } else if (msg.message.documentMessage) {
                         mediaType = "document";
+                        // NOTA: En un entorno productivo, aquí subirías el archivo a un servicio (S3, GCS)
                         mediaUrl = "http://your-server.com/uploaded-pdf.pdf";
                         content = `Respuesta con Archivo: ${msg.message.documentMessage.fileName || 'sin nombre'}`;
                     }
@@ -416,22 +414,24 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                         mediaUrl: mediaUrl,
                         mediaType: mediaType,
                         timestamp: Date.now(),
+                        originalQuotedMessage: originalMessageText.split("\n\n###BUSINESS_REPLY_ID###")[0] // Para el contexto
                     };
                     
                     try {
-                        // Notificar al Panel de Administración (WebHook)
+                        // Notificar al Panel de Administración (WebHook) para cerrar el ciclo
                         await axios.post(config.webhookUrl, payload);
                         await sock.sendMessage(from, { text: "¡Recibido! Tu respuesta ha sido procesada y se ha notificado a soporte." });
                     } catch (error) {
                         console.error("Error al enviar el payload a la interfaz:", error.message);
+                        await sock.sendMessage(from, { text: "Error: No pudimos notificar al panel. Reenvía tu mensaje a un administrador." });
                     }
                     
-                    continue; // Detener procesamiento
+                    continue; // Detener el procesamiento del mensaje normal (IA/Módulos)
                 }
             }
             // --- FIN LÓGICA DE RESPUESTA MANUAL ---
 
-            // Obtener el cuerpo del mensaje
+            // Obtener el cuerpo del mensaje para IA/Módulos
             if (msg.message.conversation) body = msg.message.conversation;
             else if (msg.message.extendedTextMessage) body = msg.message.extendedTextMessage.text;
             else if (msg.message.imageMessage) {
@@ -442,8 +442,8 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                 // Usar OpenAI o Gemini Vision para analizar la imagen
                 body = await sendToOpenAIVision(buffer, config.client_id); 
             } else if (msg.message.audioMessage) {
-                // Aquí podrías usar Gemini Vision o Google Speech-to-Text
-                body = "Audio transcrito: 'Quiero comprar créditos'"; // MOCK
+                // MOCK de transcripción de audio
+                body = "Audio transcrito: 'Quiero comprar créditos'"; 
             } else {
                 await sock.sendMessage(from, { text: "Solo puedo procesar texto, imágenes y audios." });
                 continue;
@@ -500,7 +500,7 @@ const createAndConnectSocket = async (sessionId, clientId) => {
                         
                     case "IMAGE_GENERATION":
                          if (config.openai_image_gen_enabled) {
-                             // Llama a la generación de imagen
+                             // Llama a la generación de imagen (MOCK)
                              const imageUrl = await generateOpenAIImage(module.aiPrompt || body);
                              await sock.sendMessage(from, { image: { url: imageUrl }, caption: module.responseContent });
                              continue;
@@ -544,7 +544,7 @@ app.get("/api/health", (req, res) => {
     res.json({ ok: true, status: "alive", time: new Date().toISOString() });
 });
 
-// Nota: El endpoint de creación ahora requiere el CLIENT_ID
+// Endpoint de creación de sesión (requiere CLIENT_ID)
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
   const clientId = req.query.clientId || DEFAULT_CLIENT_ID; // Nuevo parámetro
@@ -579,3 +579,8 @@ app.get("/", (req, res) => res.json({ ok: true, msg: "Asistente Empresarial Modu
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+
+// --- EJECUCIÓN INICIAL (OPCIONAL) ---
+// Para iniciar la sesión por defecto automáticamente
+// createAndConnectSocket(`main_${DEFAULT_CLIENT_ID}`, DEFAULT_CLIENT_ID).catch(console.error);
+
