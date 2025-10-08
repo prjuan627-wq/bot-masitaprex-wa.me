@@ -10,8 +10,9 @@ import path from "path";
 dotenv.config();
 
 // --- Claves de Servicios (Hardcodeadas por solicitud, excepto OpenAI) ---
-const OPENAI_API_KEY = process.env.API_KEY; // Leer la clave de OpenAI desde .env como API_KEY
-const GEMINI_API_KEY = "AIzaSyAOzh0UW4luQMPFMSZL4WMySgdsTYrxCuo"; // Hardcodeada
+const OPENAI_API_KEY = process.env.API_KEY || process.env.OPENAI_API_KEY; 
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // Leer de .env si existe. Si no, usa el fallback.
+// Las demás variables hardcodeadas se mantienen como estaban, pero son sensibles.
 const GOOGLE_CLOUD_API_KEY = "AIzaSy...TuClaveDeGoogleCloud...xyz"; // Hardcodeada
 const ADMIN_NUMBER = "51929008609"; // Hardcodeada
 const YAPE_NUMBER = "929008609"; // Hardcodeada
@@ -19,7 +20,7 @@ const LEMON_QR_IMAGE = "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVv
 const PORT = process.env.PORT || 8080; // Leer el puerto de env o usar 8080
 
 // --- Configuración Inicial ---
-const DEFAULT_AI = "openai"; // Forzado a OpenAI
+const DEFAULT_AI = "openai"; // Forzado a OpenAI como principal (más estable)
 let activeAI = DEFAULT_AI;
 
 const app = express();
@@ -33,9 +34,7 @@ const userStates = new Map();
 let botPaused = false;
 let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
-// Configuración de prompts, ahora inicializados con el prompt largo y mejorado
-// **ATENCIÓN:** Se usará como mensaje de sistema o como parte del texto de entrada,
-// por lo que se mantiene como string global.
+// --- PROMPTS DE SISTEMA ---
 let GEMINI_PROMPT = `Instrucciones maestras para el bot Consulta PE
 
 📌 Identidad
@@ -694,30 +693,30 @@ try {
   console.error("Error importando OpenAI:", err.message || err);
 }
 
-// Gemini Vision API (for images) - Uses gemini-pro-vision
+// Gemini Vision API (for images) - CORREGIDO A V1
 const geminiVisionApi = axios.create({
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent",
-  params: { key: GEMINI_API_KEY },
+  baseURL: "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent", // Usando v1 para modelos estables
+  params: { key: GEMINI_API_KEY || OPENAI_API_KEY }, // Usamos la clave que tengamos disponible para pruebas
   timeout: 30000,
 });
 
-// Gemini Text API (for general text) - REEMPLAZADO por gemini-1.5-flash (se usa directamente en consumirGemini)
-
+// Google Speech-to-Text
 const googleSpeechToTextApi = axios.create({
   baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
   params: { key: GOOGLE_CLOUD_API_KEY },
   timeout: 30000,
 });
 
-// ------------------- Gemini (TEXTO) -------------------
+// ------------------- Gemini (TEXTO) - CORREGIDO A V1 Y gemini-2.5-flash -------------------
 const consumirGemini = async (prompt) => {
   try {
-    if (!GEMINI_API_KEY) {
-      console.log("GEMINI_API_KEY no está configurada.");
+    const keyToUse = GEMINI_API_KEY || OPENAI_API_KEY; 
+    if (!keyToUse) {
+      console.log("GEMINI_API_KEY o OPENAI_API_KEY no están configuradas para Gemini.");
       return null;
     }
-    const model = "gemini-1.5-flash"; // Usando el modelo actualizado
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const model = "gemini-2.5-flash"; // Usando el modelo accesible en V1
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${keyToUse}`; // Corregido a v1
     
     // Se combina el prompt de sistema y el mensaje del usuario de forma más robusta
     const fullPrompt = `${GEMINI_PROMPT}\nUsuario: ${prompt}`;
@@ -725,10 +724,9 @@ const consumirGemini = async (prompt) => {
     const body = {
       contents: [
         {
+          role: "user",
           parts: [
-            {
-              text: fullPrompt
-            }
+            { text: fullPrompt }
           ]
         }
       ]
@@ -744,7 +742,7 @@ const consumirGemini = async (prompt) => {
   }
 };
 
-// ------------------- OpenAI (TEXTO - Placeholder) -------------------
+// ------------------- OpenAI (TEXTO) -------------------
 const consumirOpenAI = async (prompt) => {
   try {
     if (!openaiClient) {
@@ -795,11 +793,12 @@ const sendToVisionAI = async (imageBuffer) => {
             console.error("Error al analizar la imagen con OpenAI Vision:", error.message);
             return "Lo siento, no pude analizar esa imagen en este momento con OpenAI.";
         }
-    } else { // Usar Gemini Vision (comportamiento original)
+    } else { // Usar Gemini Vision (comportamiento original, ahora con URL de V1)
         try {
             const response = await geminiVisionApi.post("", {
                 contents: [
                     {
+                        role: "user",
                         parts: [
                             { text: prompt },
                             { inline_data: { mime_type: "image/jpeg", data: base64Image } },
@@ -1325,37 +1324,46 @@ const createAndConnectSocket = async (sessionId) => {
       // Si no hay respuesta local, usar la IA activa
       if (!reply) {
         let aiUsed = activeAI;
+        let originalReply = null;
+        
         switch (activeAI) {
           case "gemini":
-            reply = await consumirGemini(body);
+            originalReply = await consumirGemini(body);
             break;
           case "cohere":
-            reply = await consumirCohere(body);
+            originalReply = await consumirCohere(body);
             break;
           case "openai":
-            reply = await consumirOpenAI(body); // Usar OpenAI para texto
+            originalReply = await consumirOpenAI(body); // Usar OpenAI para texto
             break;
           case "local":
-            reply = "🤔 No se encontró respuesta local. El modo local está activo.";
+            originalReply = "🤔 No se encontró respuesta local. El modo local está activo.";
             break;
           default:
             // Intentar con OpenAI si la IA activa es inválida
-            reply = await consumirOpenAI(body);
+            originalReply = await consumirOpenAI(body);
             aiUsed = "openai (fallback)";
             break;
         }
 
+        reply = originalReply;
+        
         // --- LÓGICA DE FALLO CORREGIDA Y MEJORADA ---
-        if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude procesar el audio")) {
-             // Si falló OpenAI/Cohere o si falló el modo local, intenta con Gemini como último recurso
-            if (aiUsed !== "gemini" && aiUsed !== "gemini (fallback)") {
+        if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude procesar el audio") || reply.includes("Lo siento, no pude analizar esa imagen")) {
+             // 1. Si falló la IA activa, intentar con el otro servicio (OpenAI o Gemini)
+            if (aiUsed === "openai" || aiUsed === "cohere") {
                 console.log(`[FALLBACK] Falló ${aiUsed}. Intentando con Gemini como respaldo...`);
                 reply = await consumirGemini(body);
                 aiUsed = "gemini (fallback)";
+            } else if (aiUsed.startsWith("gemini")) {
+                console.log(`[FALLBACK] Falló Gemini. Intentando con OpenAI como respaldo...`);
+                reply = await consumirOpenAI(body);
+                aiUsed = "openai (fallback)";
             }
             
-            // Si incluso el respaldo de Gemini falla, entonces se escala a soporte
-            if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude analizar esa imagen")) {
+            // 2. Si incluso el respaldo falla, entonces se escala a soporte
+            if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude procesar el audio") || reply.includes("Lo siento, no pude analizar esa imagen")) {
+                console.log(`[ESCALADA] Falló la IA y el respaldo. Reenviando a administradores.`);
                 await forwardToAdmins(sock, body, customerNumber);
                 reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
             }
