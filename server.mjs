@@ -6,18 +6,31 @@ import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
 
+// Cargar solo la clave de OpenAI (renombrada a API_KEY) desde .env
 dotenv.config();
+
+// --- Claves de Servicios (Hardcodeadas por solicitud, excepto OpenAI) ---
+const OPENAI_API_KEY = process.env.API_KEY; // Leer la clave de OpenAI desde .env como API_KEY
+const GEMINI_API_KEY = "AIzaSyAOzh0UW4luQMPFMSZL4WMySgdsTYrxCuo"; // Hardcodeada
+const GOOGLE_CLOUD_API_KEY = "AIzaSy...TuClaveDeGoogleCloud...xyz"; // Hardcodeada
+const ADMIN_NUMBER = "51929008609"; // Hardcodeada
+const YAPE_NUMBER = "929008609"; // Hardcodeada
+const LEMON_QR_IMAGE = "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjVr57hBat6RGw80ZKF7DZgjmGsFiBQdCeBc1fIGsNF9RBfuhWSYtdWce3GdxJedoyIWCLiGd44B4-zYFFJsD_tLGvAfCAD6p0mZl8et3Ak149N5dlek16wfEQdbsKJdF49WLYFvtNFvV-WPuKvpFnA1JWthDtw57AQ_U422Rcgi8WvrV7iQa0pdRzu0yVe/s1490/1000014418.png"; // Hardcodeada
+const PORT = process.env.PORT || 8080; // Leer el puerto de env o usar 8080
+
+// --- Configuración Inicial ---
+const DEFAULT_AI = "openai"; // Forzado a OpenAI
+let activeAI = DEFAULT_AI;
 
 const app = express();
 app.use(cors({ origin: "*" }));
-app.use(express.json()); // Add this line to parse JSON body for the new endpoint
+app.use(express.json());
 
 const sessions = new Map();
-const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
+const userStates = new Map();
 
 // Estado del bot
 let botPaused = false;
-let activeAI = process.env.DEFAULT_AI || "gemini";
 let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
 // Configuración de prompts, ahora inicializados con el prompt largo y mejorado
@@ -651,32 +664,31 @@ const YAPE_PROMPT = `¡Listo, leyenda! Elige la cantidad de poder que quieres, e
 
 *Monto:* S/{{monto}}
 *Créditos:* {{creditos}}
-*Yape:* {{numero_yape}}
+*Yape:* ${YAPE_NUMBER}
 *Titular:* José R. Cubas
 
 Una vez que pagues, envía el comprobante y tu correo registrado en la app. Te activamos los créditos al toque. No pierdas tiempo.
 
 `;
 const PACKAGES = {
-    '10': { amount: 10, credits: 60, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '20': { amount: 20, credits: 125, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '50': { amount: 50, credits: 330, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '100': { amount: 100, credits: 700, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '10': { amount: 10, credits: 60, qr_url: LEMON_QR_IMAGE },
+    '20': { amount: 20, credits: 125, qr_url: LEMON_QR_IMAGE },
+    '50': { amount: 50, credits: 330, qr_url: LEMON_QR_IMAGE },
+    '100': { amount: 100, credits: 700, qr_url: LEMON_QR_IMAGE },
+    '200': { amount: 200, credits: 1500, qr_url: LEMON_QR_IMAGE },
 };
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
 
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
 // --- API CLients (OpenAI, Gemini) ---
 
 // OpenAI Client
 let openaiClient;
 try {
-  if (process.env.OPENAI_API_KEY) {
+  if (OPENAI_API_KEY) {
     const { OpenAI } = await import("openai");
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    openaiClient = new OpenAI({ apiKey: OPENAI_API_KEY });
   }
 } catch (err) {
   console.error("Error importando OpenAI:", err.message || err);
@@ -685,7 +697,7 @@ try {
 // Gemini Vision API (for images) - Uses gemini-pro-vision
 const geminiVisionApi = axios.create({
   baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent",
-  params: { key: process.env.GEMINI_API_KEY },
+  params: { key: GEMINI_API_KEY },
   timeout: 30000,
 });
 
@@ -693,19 +705,19 @@ const geminiVisionApi = axios.create({
 
 const googleSpeechToTextApi = axios.create({
   baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
-  params: { key: process.env.GOOGLE_CLOUD_API_KEY },
+  params: { key: GOOGLE_CLOUD_API_KEY },
   timeout: 30000,
 });
 
 // ------------------- Gemini (TEXTO) -------------------
 const consumirGemini = async (prompt) => {
   try {
-    if (!process.env.GEMINI_API_KEY) {
+    if (!GEMINI_API_KEY) {
       console.log("GEMINI_API_KEY no está configurada.");
       return null;
     }
     const model = "gemini-1.5-flash"; // Usando el modelo actualizado
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
     
     // Se combina el prompt de sistema y el mensaje del usuario de forma más robusta
     const fullPrompt = `${GEMINI_PROMPT}\nUsuario: ${prompt}`;
@@ -806,7 +818,7 @@ const sendToVisionAI = async (imageBuffer) => {
 
 const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
     try {
-        if (!process.env.GOOGLE_CLOUD_API_KEY) {
+        if (!GOOGLE_CLOUD_API_KEY || GOOGLE_CLOUD_API_KEY.includes("TuClaveDeGoogleCloud")) {
             return "Lo siento, la clave de Google Cloud API no está configurada para la transcripción de audio. Por favor, escribe tu mensaje.";
         }
         const audio = audioBuffer.toString('base64');
@@ -830,15 +842,18 @@ const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
 };
 
 // ------------------- Cohere -------------------
+// NOTA: Se mantiene la estructura para Cohere aunque la clave no se lea de .env.
+// Se recomienda hardcodear la clave en una variable aquí si se va a usar.
 const consumirCohere = async (prompt) => {
   try {
-    if (!process.env.COHERE_API_KEY) {
+    const COHERE_API_KEY = ""; // Clave hardcodeada para Cohere si se necesitara.
+    if (!COHERE_API_KEY) {
       console.log("COHERE_API_KEY no está configurada.");
       return null;
     }
     const url = "https://api.cohere.ai/v1/chat";
     const headers = {
-      "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
+      "Authorization": `Bearer ${COHERE_API_KEY}`,
       "Content-Type": "application/json"
     };
     const data = {
@@ -904,7 +919,7 @@ const formatText = (text, style) => {
 const forwardToAdmins = async (sock, message, customerNumber) => {
   // Asegurarse de que el número de admin sea un JID válido
   const adminNumbers = [
-    process.env.ADMIN_NUMBER ? `${process.env.ADMIN_NUMBER}@s.whatsapp.net` : null, 
+    ADMIN_NUMBER ? `${ADMIN_NUMBER}@s.whatsapp.net` : null, 
     "51965993244@s.whatsapp.net" // Número de ejemplo
   ].filter(Boolean); 
 
@@ -1217,7 +1232,7 @@ const createAndConnectSocket = async (sessionId) => {
         // Asume que la imagen es un comprobante. 
         
         const adminNumbers = [
-            process.env.ADMIN_NUMBER ? `${process.env.ADMIN_NUMBER}@s.whatsapp.net` : null, 
+            ADMIN_NUMBER ? `${ADMIN_NUMBER}@s.whatsapp.net` : null, 
             "51965993244@s.whatsapp.net"
         ].filter(Boolean);
         
@@ -1251,8 +1266,7 @@ const createAndConnectSocket = async (sessionId) => {
       if (paqueteElegido) {
         try {
           // Cargar la imagen del QR
-          // Se usa directamente process.env para evitar errores de tipo.
-          const qrImageUrl = process.env[paqueteElegido.qr_key];
+          const qrImageUrl = paqueteElegido.qr_url;
           if (!qrImageUrl) throw new Error("URL de QR no configurada");
           
           const qrImageBuffer = await axios.get(qrImageUrl, { responseType: 'arraybuffer' });
@@ -1261,8 +1275,7 @@ const createAndConnectSocket = async (sessionId) => {
           // Generar el mensaje de texto
           const textMessage = YAPE_PROMPT
             .replace('{{monto}}', paqueteElegido.amount)
-            .replace('{{creditos}}', paqueteElegido.credits)
-            .replace('{{numero_yape}}', process.env[paqueteElegido.yape_num]);
+            .replace('{{creditos}}', paqueteElegido.credits);
             
           // Enviar la imagen y el texto en un solo mensaje
           await sock.sendMessage(from, {
@@ -1326,22 +1339,23 @@ const createAndConnectSocket = async (sessionId) => {
             reply = "🤔 No se encontró respuesta local. El modo local está activo.";
             break;
           default:
-            // Intentar con Gemini si la IA activa es inválida
-            reply = await consumirGemini(body);
-            aiUsed = "gemini (fallback)";
+            // Intentar con OpenAI si la IA activa es inválida
+            reply = await consumirOpenAI(body);
+            aiUsed = "openai (fallback)";
             break;
         }
 
         // --- LÓGICA DE FALLO CORREGIDA Y MEJORADA ---
         if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude procesar el audio")) {
-             // Si falló Cohere/OpenAI o si falló el modo local, intenta con Gemini como último recurso
+             // Si falló OpenAI/Cohere o si falló el modo local, intenta con Gemini como último recurso
             if (aiUsed !== "gemini" && aiUsed !== "gemini (fallback)") {
                 console.log(`[FALLBACK] Falló ${aiUsed}. Intentando con Gemini como respaldo...`);
                 reply = await consumirGemini(body);
+                aiUsed = "gemini (fallback)";
             }
             
             // Si incluso el respaldo de Gemini falla, entonces se escala a soporte
-            if (!reply || reply.includes("no pude encontrar una respuesta")) {
+            if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude analizar esa imagen")) {
                 await forwardToAdmins(sock, body, customerNumber);
                 reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
             }
@@ -1440,5 +1454,4 @@ app.get("/api/session/reset", async (req, res) => {
 
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
