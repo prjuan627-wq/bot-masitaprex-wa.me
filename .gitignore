@@ -1,3 +1,9 @@
-node_modules
+### `.gitignore`
+```gitignore
+__pycache__/
+*.pyc
 .env
-sessions
+.vscode/
+.venv/
+instance/
+.DS_Store
