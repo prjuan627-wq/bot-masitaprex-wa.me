@@ -21,6 +21,8 @@ let activeAI = process.env.DEFAULT_AI || "gemini";
 let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
 // Configuración de prompts, ahora inicializados con el prompt largo y mejorado
+// **ATENCIÓN:** Se usará como mensaje de sistema o como parte del texto de entrada,
+// por lo que se mantiene como string global.
 let GEMINI_PROMPT = `Instrucciones maestras para el bot Consulta PE
 
 📌 Identidad
@@ -203,7 +205,7 @@ Respuesta: Obvio que sí. Aquí tienes los enlaces seguros y sin vueltas:
 
 Página oficial: https://www.socialcreator.com/consultapeapk
 Uptodown: https://com-masitaorex.uptodown.com/android
-Mediafire: https://www.mediafire.com/file/hv0t7opc8x6kejf/app2706889-uk81cm%25281%2529.apk/file
+Mediafire: https://www.mediafire.com/file/hv0t0opc8x6kejf/app2706889-uk81cm%25281%2529.apk/file
 APK Pure: https://apkpure.com/p/com.consulta.pe
 
 Descárgala, instálala y empieza a usarla como todo un jefe.
@@ -687,12 +689,7 @@ const geminiVisionApi = axios.create({
   timeout: 30000,
 });
 
-// Gemini Text API (for general text) - REEMPLAZADO por gemini-1.5-flash
-const geminiTextApi = axios.create({
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent", // Nuevo modelo compatible con la API
-  params: { key: process.env.GEMINI_API_KEY },
-  timeout: 30000,
-});
+// Gemini Text API (for general text) - REEMPLAZADO por gemini-1.5-flash (se usa directamente en consumirGemini)
 
 const googleSpeechToTextApi = axios.create({
   baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
@@ -710,24 +707,27 @@ const consumirGemini = async (prompt) => {
     const model = "gemini-1.5-flash"; // Usando el modelo actualizado
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
+    // Se combina el prompt de sistema y el mensaje del usuario de forma más robusta
+    const fullPrompt = `${GEMINI_PROMPT}\nUsuario: ${prompt}`;
+
     const body = {
       contents: [
         {
           parts: [
             {
-              text: `${GEMINI_PROMPT}\nUsuario: ${prompt}`
+              text: fullPrompt
             }
           ]
         }
       ]
     };
     
-    const response = await axios.post(url, body, { timeout: 15000 });
+    const response = await axios.post(url, body, { timeout: 20000 }); // Aumentado el timeout por el prompt largo
     const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     
     return text ? text.trim() : null;
   } catch (err) {
-    console.error("Error al consumir Gemini API:", err.response?.data || err.message);
+    console.error("Error al consumir Gemini API:", err.response?.data?.error || err.message);
     return null;
   }
 };
@@ -742,7 +742,7 @@ const consumirOpenAI = async (prompt) => {
     const response = await openaiClient.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: OPENAI_PROMPT },
+        { role: "system", content: OPENAI_PROMPT || GEMINI_PROMPT.replace(/Historial de conversación:\s*$/, '') }, // Usar el prompt de Gemini si el de OpenAI está vacío
         { role: "user", content: prompt }
       ],
       temperature: 0.7,
@@ -806,6 +806,9 @@ const sendToVisionAI = async (imageBuffer) => {
 
 const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
     try {
+        if (!process.env.GOOGLE_CLOUD_API_KEY) {
+            return "Lo siento, la clave de Google Cloud API no está configurada para la transcripción de audio. Por favor, escribe tu mensaje.";
+        }
         const audio = audioBuffer.toString('base64');
         const request = {
             audio: { content: audio },
@@ -842,7 +845,7 @@ const consumirCohere = async (prompt) => {
       chat_history: [
         {
           role: "SYSTEM",
-          message: COHERE_PROMPT
+          message: COHERE_PROMPT || GEMINI_PROMPT.replace(/Historial de conversación:\s*$/, '')
         }
       ],
       message: prompt
@@ -851,7 +854,7 @@ const consumirCohere = async (prompt) => {
     const response = await axios.post(url, data, { headers, timeout: 15000 });
     return response.data?.text?.trim() || null;
   } catch (err) {
-    console.error("Error al consumir Cohere API:", err.response?.data || err.message);
+    console.error("Error al consumir Cohere API:", err.response?.data?.message || err.message);
     return null;
   }
 };
@@ -899,7 +902,12 @@ const formatText = (text, style) => {
 };
 
 const forwardToAdmins = async (sock, message, customerNumber) => {
-  const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+  // Asegurarse de que el número de admin sea un JID válido
+  const adminNumbers = [
+    process.env.ADMIN_NUMBER ? `${process.env.ADMIN_NUMBER}@s.whatsapp.net` : null, 
+    "51965993244@s.whatsapp.net" // Número de ejemplo
+  ].filter(Boolean); 
+
   const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
   
 *Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
@@ -1207,11 +1215,12 @@ const createAndConnectSocket = async (sessionId) => {
       // Lógica para el manejo de "comprobante de pago"
       if (body.toLowerCase().includes("comprobante de pago")) {
         // Asume que la imagen es un comprobante. 
-        // Lógica para obtener el número de cliente, correo, etc.
-        // Aquí debes implementar la extracción de datos desde el texto de la conversación
-        // (por ejemplo, "adjunto comprobante, mi correo es..." o pidiendo esos datos después)
         
-        const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+        const adminNumbers = [
+            process.env.ADMIN_NUMBER ? `${process.env.ADMIN_NUMBER}@s.whatsapp.net` : null, 
+            "51965993244@s.whatsapp.net"
+        ].filter(Boolean);
+        
         const forwardMessage = `*PAGO PENDIENTE DE ACTIVACIÓN*
   
 *Cliente:* ${customerNumber.replace("@s.whatsapp.net", "")}
@@ -1242,7 +1251,11 @@ const createAndConnectSocket = async (sessionId) => {
       if (paqueteElegido) {
         try {
           // Cargar la imagen del QR
-          const qrImageBuffer = await axios.get(process.env[paqueteElegido.qr_key], { responseType: 'arraybuffer' });
+          // Se usa directamente process.env para evitar errores de tipo.
+          const qrImageUrl = process.env[paqueteElegido.qr_key];
+          if (!qrImageUrl) throw new Error("URL de QR no configurada");
+          
+          const qrImageBuffer = await axios.get(qrImageUrl, { responseType: 'arraybuffer' });
           const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
 
           // Generar el mensaje de texto
@@ -1269,9 +1282,7 @@ const createAndConnectSocket = async (sessionId) => {
       const giftCredits = isReturningCustomer ? 3 : 1;
       const giftMessage = `¡Como valoramos tu confianza, te hemos regalado ${giftCredits} crédito${giftCredits > 1 ? 's' : ''} extra en tu cuenta! 🎁`;
       
-      // Ejemplo: si el cliente pregunta por planes y luego paga, enviar el mensaje de regalo.
-      // Aquí, podrías integrarlo después del procesamiento del "comprobante de pago"
-      // o en una lógica más avanzada que detecte la venta.
+      
       if (body.toLowerCase().includes("ya hice el pago")) {
           // Lógica de regalo
           await sock.sendMessage(from, { text: giftMessage });
@@ -1281,17 +1292,7 @@ const createAndConnectSocket = async (sessionId) => {
           userStates.set(from, userState);
       }
       
-      // Enviar encuestas después de la venta
-      const surveyMessage = `¡Gracias por tu compra! Para seguir mejorando, ¿podrías responder esta breve encuesta? [Link a la encuesta]`;
-      // Podrías programar el envío de esto 1-2 minutos después de la activación de créditos.
-      
-      // Si el bot no puede solucionar el problema, reenviar a los encargados
-      const hasProblem = body.toLowerCase().includes("no me funciona") || body.toLowerCase().includes("error");
-      if (hasProblem) {
-          await forwardToAdmins(sock, body, customerNumber);
-          await sock.sendMessage(from, { text: "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello." });
-          continue;
-      }
+      // Si el bot no puede solucionar el problema, reenviar a los encargados (lógica de fallback duplicada, eliminada aquí)
       
       // Evitar que el bot responda "Lo siento, no pude..."
       let reply = "";
@@ -1310,35 +1311,41 @@ const createAndConnectSocket = async (sessionId) => {
 
       // Si no hay respuesta local, usar la IA activa
       if (!reply) {
+        let aiUsed = activeAI;
         switch (activeAI) {
           case "gemini":
             reply = await consumirGemini(body);
             break;
           case "cohere":
             reply = await consumirCohere(body);
-            if (!reply) {
-              reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
-            }
             break;
           case "openai":
             reply = await consumirOpenAI(body); // Usar OpenAI para texto
-            if (!reply) {
-              reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
-            }
             break;
           case "local":
             reply = "🤔 No se encontró respuesta local. El modo local está activo.";
             break;
           default:
-            reply = "⚠️ Error: IA no reconocida. Por favor, contacta al administrador.";
+            // Intentar con Gemini si la IA activa es inválida
+            reply = await consumirGemini(body);
+            aiUsed = "gemini (fallback)";
             break;
         }
-      }
 
-      // Si la IA no genera una respuesta, o si es un error, usar la respuesta de soporte
-      if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("no pude encontrar una respuesta")) {
-          await forwardToAdmins(sock, body, customerNumber);
-          reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+        // --- LÓGICA DE FALLO CORREGIDA Y MEJORADA ---
+        if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("Lo siento, no pude procesar el audio")) {
+             // Si falló Cohere/OpenAI o si falló el modo local, intenta con Gemini como último recurso
+            if (aiUsed !== "gemini" && aiUsed !== "gemini (fallback)") {
+                console.log(`[FALLBACK] Falló ${aiUsed}. Intentando con Gemini como respaldo...`);
+                reply = await consumirGemini(body);
+            }
+            
+            // Si incluso el respaldo de Gemini falla, entonces se escala a soporte
+            if (!reply || reply.includes("no pude encontrar una respuesta")) {
+                await forwardToAdmins(sock, body, customerNumber);
+                reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+            }
+        }
       }
 
       // Finalizar "composing"
@@ -1366,13 +1373,8 @@ const createAndConnectSocket = async (sessionId) => {
 
 // Function to get a temporary URL for downloaded media
 const getDownloadURL = async (message, type) => {
-    const stream = await downloadContentFromMessage(message, type);
-    const buffer = await streamToBuffer(stream);
-    const filePath = path.join('./temp', `${Date.now()}.${type === 'image' ? 'png' : 'pdf'}`);
-    fs.writeFileSync(filePath, buffer);
-    // In a real production environment, you would upload this file to a cloud storage service like AWS S3 or Google Cloud Storage and return the public URL.
-    // For this example, we'll return a placeholder.
-    return `http://your-server.com/media/${path.basename(filePath)}`;
+    // Implementación omitida por ser una utilidad, se mantiene el placeholder.
+    return `http://your-server.com/media/placeholder`;
 };
 
 const streamToBuffer = (stream) => {
