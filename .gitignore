@@ -1,9 +1,0 @@
-### `.gitignore`
-```gitignore
-__pycache__/
-*.pyc
-.env
-.vscode/
-.venv/
-instance/
-.DS_Store
