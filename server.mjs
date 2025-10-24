@@ -5,164 +5,95 @@ import axios from "axios";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
+import qs from "qs"; // Importar qs para manejar query strings de forma segura
 
 dotenv.config();
 
 const app = express();
-app.use(cors({ origin: "*" }));
-app.use(express.json());
+// Configurar CORS para permitir peticiones desde cualquier origen para los nuevos endpoints
+app.use(cors({ origin: "*" })); 
+app.use(express.json()); // Middleware para parsear bodies en formato JSON
 
-// --- GESTIÓN DE INACTIVIDAD (Para Fly.io) ---
-const INACTIVITY_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutos
-let inactivityTimer;
-
-const resetInactivityTimer = () => {
-    if (inactivityTimer) {
-        clearTimeout(inactivityTimer);
-    }
-    inactivityTimer = setTimeout(() => {
-        console.log(`\n😴 Contenedor inactivo por ${INACTIVITY_TIMEOUT_MS / 60000} minutos. Simulando apagado para ahorro de recursos...\n`);
-        // En Fly.io, simplemente no respondes a nuevos requests.
-        // Aquí simulamos un exit para detener el proceso, lo que haría que Fly.io lo apague.
-        // ¡ADVERTENCIA! Si usas esto localmente, detendrá el proceso. En Fly.io, el proxy
-        // se encargará de despertar el contenedor si llega un mensaje de WhatsApp.
-        // process.exit(0); 
-    }, INACTIVITY_TIMEOUT_MS);
-};
-
-// Middleware para resetear el temporizador en cada request
-app.use((req, res, next) => {
-    resetInactivityTimer();
-    next();
-});
-
-// Inicializar el temporizador al arrancar
-resetInactivityTimer();
-// ---------------------------------------------
-
-
-// Archivo para guardar los datos de las sesiones de WhatsApp
-const USERS_DATA_FILE = path.join(process.cwd(), "users_data.json");
-if (!fs.existsSync(USERS_DATA_FILE)) {
-    fs.writeFileSync(USERS_DATA_FILE, JSON.stringify({}));
-}
-const loadUserData = () => JSON.parse(fs.readFileSync(USERS_DATA_FILE, "utf-8"));
-const saveUserData = (data) => fs.writeFileSync(USERS_DATA_FILE, JSON.stringify(data, null, 2));
+// Configuración global para la respuesta a los clientes
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER || "51929008609"; // Número principal del admin
 
 const sessions = new Map();
 const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
 
 // Estado del bot
 let botPaused = false;
-let activeAI = process.env.DEFAULT_AI || "gemini";
-let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
+let activeAI = "local"; // Forzamos el modo local como predeterminado
+let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy? Te recuerdo que el asistente de Consulta PE ahora tiene respuestas instantáneas. 😉";
 
-// Configuración de prompts, ahora inicializados con el prompt largo y mejorado
-let GEMINI_PROMPT = `Instrucciones maestras para el bot Consulta PE... [PROMPT COMPLETO]`; // Dejado truncado por espacio
-let COHERE_PROMPT = "";
-let OPENAI_PROMPT = "";
+// --- Datos Fijos de Paquetes y Pago ---
+const PACKAGES = {
+    '10': { amount: 10, credits: 60, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER', name: 'Paquete de S/10 (60 créditos ⚡)' },
+    '20': { amount: 20, credits: 125, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER', name: 'Paquete de S/20 (125 créditos 🚀)' },
+    '50': { amount: 50, credits: 330, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER', name: 'Paquete de S/50 (330 créditos 💎)' },
+    '100': { amount: 100, credits: 700, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER', name: 'Paquete de S/100 (700 créditos 👑)' },
+    '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER', name: 'Paquete de S/200 (1500 créditos 🔥)' },
+};
 
-// Prompts y datos para el pago (Asegúrate de configurar en .env)
-const YAPE_NUMBER = process.env.YAPE_NUMBER || "929008609";
-const QR_IMAGE_URL = process.env.LEMON_QR_IMAGE || "https://ejemplo.com/qr.png"; // Debe ser una URL real
+// Prompt de Yape para envío de QR (se asume que YAPE_NUMBER y QR_IMAGE están en .env)
+const YAPE_PROMPT = `
+¡Listo, leyenda! Elegiste el *Paquete de {{monto}} soles* con *{{creditos}} créditos*.
 
-const YAPE_PAYMENT_PROMPT = `¡Listo, leyenda! Elige la cantidad de poder que quieres, escanea el QR y paga directo por Yape.
+Escanea el QR y paga directo por Yape.
 
 *Monto:* S/{{monto}}
 *Créditos:* {{creditos}}
-*Yape:* ${YAPE_NUMBER}
+*Yape:* {{numero_yape}}
 *Titular:* José R. Cubas
 
-Una vez que pagues, envía el comprobante y tu correo registrado en la app. Te activamos los créditos al toque. No pierdas tiempo.
+Una vez que pagues, envía el *comprobante* y tu *correo* registrado en la app. Te activamos los créditos al toque. No pierdas tiempo.
 `;
 
-const PACKAGES = {
-    '10': { amount: 10, credits: 60, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '20': { amount: 20, credits: 125, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '50': { amount: 50, credits: 330, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '100': { amount: 100, credits: 700, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-};
-
-// Respuestas locales y menús
-let respuestasPredefinidas = {};
-
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
-const ADMIN_NUMBERS = [
-    `${process.env.ADMIN_WA_NUMBER_1}@s.whatsapp.net`,
-    `${process.env.ADMIN_WA_NUMBER_2}@s.whatsapp.net`
-].filter(n => n.startsWith('51'));
-
-// --- Patrones de Venta/Pago (para lógica sin IA) ---
-const VENTA_PATTERNS = [
-    "Quiero comprar créditos", "Necesito créditos", "Quiero el acceso", 
-    "¿Dónde pago?", "¿Cómo compro eso?", "Me interesa la app completa", 
-    "Dame acceso completo", "Hola, quiero comprar créditos para Consulta PE. ¿Me puedes dar información?"
-];
-
-const PAGO_PATTERNS = [
-    "Cómo lo realizo el pago", "10", "20", "50", "100", "200", 
-    "Paquete de 10", "Paquete de 20", "Paquete de 50", "Paquete de 100", 
-    "Paquete de 200", "El de 10 soles", "A qué número yapeo o plineo", 
-    "10 so nomás porfa", "60 creditos"
-];
-
-// Respuesta para la venta
-const VENTA_RESPONSE = `🔥 Hola, crack 👋 Bienvenid@ al nivel premium de Consulta PE.
-Aquí no todos llegan… pero tú sí. 
-
-Ahora toca elegir qué tanto poder quieres desbloquear: 
-💰 Paquetes disponibles:
+// Respuestas Fijas para compra (Se priorizarán sobre la IA/Local)
+const RESPONSE_PAQUETES = `
+💰 *Paquetes disponibles:*
 
 MONTO (S/)	         CRÉDITOS
-
 10	                               60 ⚡
 20                             	 125 🚀
 50	                               330 💎
 100	                            700 👑
 200	                            1500 🔥
 
+✨ *Ventaja premium:* Tus créditos jamás caducan. Lo que compras, es tuyo para siempre.
 
-✨ Ventaja premium: Tus créditos jamás caducan. Lo que compras, es tuyo para siempre.
-
-🎁 Y porque me caes bien: Por la compra de cualquier paquete te voy a añadir  3 créditos extra de yapa.
+🎁 Y porque me caes bien: Por la compra de cualquier paquete te voy a añadir *3 créditos extra de yapa*.
+\n\n*Para comprar, simplemente dime el monto (ej. '10', '50') o 'Paquete de 10'.*
 `;
 
-// --- Funciones de Utilidad ---
+const RESPONSE_METODO_PAGO = `
+💳 *Métodos de Pago:*
+Pagamos como VIP: *Yape*, *Lemon Cash*, *Bim*, *PayPal* o depósito directo.
 
-const checkMatch = (text, patterns) => {
-    const textWords = new Set(text.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-    
-    for (const pattern of patterns) {
-        const patternWords = pattern.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-        
-        if (patternWords.length === 0) continue;
-        
-        let matches = 0;
-        for (const pWord of patternWords) {
-            if (textWords.has(pWord)) {
-                matches++;
-            }
-        }
-        
-        // Coincidencia del 50%
-        if (matches / patternWords.length >= 0.5) {
-            return true;
-        }
-        // Coincidencia de números directos (si aplica)
-        if (patternWords.length === 1 && textWords.has(patternWords[0])) {
-            return true;
-        }
-    }
-    return false;
+Si no tienes ninguno, puedes pagar en una farmacia, agencia bancaria o pedirle a un amigo. Cuando uno quiere resultados, no pone excusas.
+
+*Para Yape o Plin, dime el monto exacto del paquete que deseas (ej. '10' o 'Paquete de 10').*
+`;
+
+// Respuestas locales para el bot (Se eliminan los prompts de IA)
+let respuestasPredefinidas = {
+    // Coincidencias para mostrar paquetes (50% de coincidencia)
+    "quiero comprar créditos": RESPONSE_PAQUETES,
+    "necesito créditos": RESPONSE_PAQUETES,
+    "quiero el acceso": RESPONSE_PAQUETES,
+    "me interesa la app completa": RESPONSE_PAQUETES,
+    "dame acceso completo": RESPONSE_PAQUETES,
+    "hola, quiero comprar créditos para consulta pe. ¿me puedes dar información?": RESPONSE_PAQUETES,
+
+    // Coincidencias para mostrar métodos de pago (50% de coincidencia)
+    "dónde pago": RESPONSE_METODO_PAGO,
+    "cómo compro eso": RESPONSE_METODO_PAGO,
+    "cómo lo relaizo el pago": RESPONSE_METODO_PAGO,
+    "a qué número yapeo o plineo": RESPONSE_METODO_PAGO,
+    "métodos de pago": RESPONSE_METODO_PAGO,
+    "formas de pago": RESPONSE_METODO_PAGO,
+    "cómo puedo pagar": RESPONSE_METODO_PAGO,
 };
 
-// --- API y Herramientas (omitidas por brevedad, asume que están definidas como en el prompt original) ---
-// const geminiVisionApi = ...
-// const geminiTextApi = ...
-// const googleSpeechToTextApi = ...
-// const consumirGemini = ...
-// const consumirCohere = ...
 
 // ------------------- Importar Baileys -------------------
 let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get
@@ -178,23 +109,81 @@ try {
   console.error("Error importando Baileys:", err.message || err);
 }
 
+
 // ------------------- Utilidades -------------------
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const forwardToAdmins = async (sock, message, customerNumber, type = "GENERAL") => {
-  const forwardedMessage = `*REENVÍO AUTOMÁTICO - ${type}*
-  
-*Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
+// Lista de administradores para reenvío (JID de WhatsApp)
+const adminJIDs = [
+    `${ADMIN_NUMBER}@s.whatsapp.net`, 
+    "51965993244@s.whatsapp.net"
+];
 
-*Mensaje del cliente:*
-${message}
-  
-*Enviado por el Bot para atención inmediata.*`;
-
-  for (const admin of ADMIN_NUMBERS) {
-    if (admin) await sock.sendMessage(admin, { text: forwardedMessage });
-  }
+const forwardToAdmins = async (sock, message) => {
+    for (const admin of adminJIDs) {
+        await sock.sendMessage(admin, { text: message });
+        await wait(500);
+    }
 };
+
+const getSimilarity = (s1, s2) => {
+    let longer = s1;
+    let shorter = s2;
+    if (s1.length < s2.length) {
+        longer = s2;
+        shorter = s1;
+    }
+    const longerLength = longer.length;
+    if (longerLength === 0) return 1.0;
+    // Función de Levenshtein simple para similitud
+    const costs = new Array(shorter.length + 1);
+    for (let i = 0; i <= longer.length; i++) costs[i] = i;
+    for (let i = 1; i <= shorter.length; i++) {
+        let lastValue = i;
+        for (let j = 1; j <= longer.length; j++) {
+            const newValue = (shorter[i - 1] !== longer[j - 1] ? 1 : 0) + Math.min(costs[j], lastValue, costs[j - 1]);
+            costs[j - 1] = lastValue;
+            lastValue = newValue;
+        }
+        costs[longer.length] = lastValue;
+    }
+    return (longerLength - costs[longer.length]) / longerLength;
+};
+
+
+// ------------------- Lógica Local de Respuestas -------------------
+function obtenerRespuestaLocal(texto) {
+    const lowerCaseText = texto.toLowerCase().trim();
+    let bestMatch = null;
+    let maxSimilarity = 0.0;
+
+    // 1. Buscar coincidencia exacta en los paquetes de pago
+    const paqueteExacto = Object.keys(PACKAGES).find(key => 
+        lowerCaseText === key || 
+        lowerCaseText === `paquete de ${key}` ||
+        lowerCaseText === `${key} so nomás porfa` ||
+        (key === '10' && lowerCaseText.includes('60 creditos'))
+    );
+
+    if (paqueteExacto) {
+        return PACKAGES[paqueteExacto]; // Retorna el objeto paquete
+    }
+
+    // 2. Buscar coincidencia en respuestas predefinidas (50% de similitud)
+    for (const key in respuestasPredefinidas) {
+        const similarity = getSimilarity(lowerCaseText, key);
+        if (similarity >= 0.5 && similarity > maxSimilarity) {
+            maxSimilarity = similarity;
+            bestMatch = respuestasPredefinidas[key];
+        }
+    }
+    
+    // 3. Si es un comando de admin, forzar un mensaje nulo para no responder
+    if (lowerCaseText.startsWith("/")) return null;
+
+    return bestMatch; // Retorna el texto de la respuesta o null
+}
+
 
 // ------------------- Crear Socket -------------------
 const createAndConnectSocket = async (sessionId) => {
@@ -230,17 +219,6 @@ const createAndConnectSocket = async (sessionId) => {
       sessions.get(sessionId).status = "connected";
       console.log("✅ WhatsApp conectado:", sessionId);
       await saveCreds();
-      
-      // Guardar la vinculación en users_data.json
-      const userData = loadUserData();
-      userData[sessionId] = {
-          status: "connected",
-          timestamp: new Date().toISOString(),
-          // Se asume que el JID del bot es su propio número si está conectado
-          jid: sock.user.id 
-      };
-      saveUserData(userData);
-
     }
 
     if (connection === "close") {
@@ -253,11 +231,6 @@ const createAndConnectSocket = async (sessionId) => {
         console.log("Sesión cerrada por desconexión del usuario.");
         sessions.delete(sessionId);
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        
-        // Eliminar de users_data.json
-        const userData = loadUserData();
-        delete userData[sessionId];
-        saveUserData(userData);
       }
     }
   });
@@ -276,234 +249,293 @@ const createAndConnectSocket = async (sessionId) => {
   });
 
   sock.ev.on("messages.upsert", async (m) => {
-    resetInactivityTimer(); // Reiniciar el temporizador al recibir un mensaje
-    
     for (const msg of m.messages || []) {
       if (!msg.message || msg.key.fromMe) continue;
       
       const from = msg.key.remoteJid;
       const customerNumber = from;
       
+      if (msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VOICE || msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO) {
+        await sock.sendMessage(from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
+        continue;
+      }
+      
       let body = "";
-      // ... (Lógica de obtención de body, transcripción y análisis de imagen omitida)
-      // (ASUMIMOS QUE 'body' CONTIENE EL TEXTO DEL CLIENTE)
+
+      if (msg.message.conversation) {
+        body = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage) {
+        body = msg.message.extendedTextMessage.text;
+      } else if (msg.message.imageMessage) {
+        // En lugar de enviar a Gemini Vision, simplemente notificar al admin si es una imagen
+        body = "comprobante de pago"; // Forzar la detección de comprobante
+      } else if (msg.message.audioMessage) {
+          // En modo "local" sin IA, no se puede transcribir.
+          await sock.sendMessage(from, { text: "Lo siento, en este momento solo puedo procesar mensajes de texto. Por favor, escribe tu consulta." });
+          continue;
+      } else {
+          await sock.sendMessage(from, { text: "Lo siento, solo puedo procesar mensajes de texto e imágenes. Por favor, envía tu consulta en uno de esos formatos." });
+          continue;
+      }
       
       if (!body) continue;
 
-      // ... (Lógica de comandos de administrador omitida)
+      // --- Comandos de Administrador (Mantener) ---
+      const is_admin = adminJIDs.includes(from);
+      if (is_admin && body.startsWith("/")) {
+        const parts = body.substring(1).split("|").map(p => p.trim());
+        const command = parts[0].split(" ")[0];
+        const arg = parts[0].split(" ").slice(1).join(" ");
+        
+        switch (command) {
+          case "pause":
+            botPaused = true;
+            await sock.sendMessage(from, { text: "✅ Bot pausado. No responderé a los mensajes." });
+            break;
+          case "resume":
+            botPaused = false;
+            await sock.sendMessage(from, { text: "✅ Bot reanudado. Volveré a responder." });
+            break;
+          case "status":
+            await sock.sendMessage(from, { text: `
+              📊 *Estado del Bot* 📊
+              Estado de conexión: *${sessions.get(sessionId).status}*
+              IA activa: *${activeAI}* (Forzado a local)
+              Bot pausado: *${botPaused ? "Sí" : "No"}*
+            `});
+            break;
+          default:
+            await sock.sendMessage(from, { text: "❌ Comando de administrador no reconocido." });
+        }
+        return;
+      }
 
       if (botPaused) return;
       
-      // Lógica de Venta Automática (SIN IA - Prioridad Máxima)
-      if (checkMatch(body, VENTA_PATTERNS)) {
-          await sock.sendMessage(from, { text: VENTA_RESPONSE });
-          continue; // Detener el procesamiento
-      }
-
-      // Lógica de Pago Automático (SIN IA - Prioridad Máxima)
+      // --- Lógica de Detección de Respuestas Locales / Paquetes ---
+      const replyOrPackage = obtenerRespuestaLocal(body);
+      let replyText = null;
       let paqueteElegido = null;
-      const lowerCaseBody = body.toLowerCase().trim();
 
-      // Buscar coincidencia de paquete por monto o nombre
-      for (const [key, value] of Object.entries(PACKAGES)) {
-          if (lowerCaseBody === key || checkMatch(body, [`paquete de ${key}`, `${key} soles`, `${value.credits} creditos`])) {
-              paqueteElegido = value;
-              break;
-          }
+      if (typeof replyOrPackage === 'string') {
+          replyText = replyOrPackage;
+      } else if (typeof replyOrPackage === 'object' && replyOrPackage !== null) {
+          paqueteElegido = replyOrPackage;
       }
 
-      if (paqueteElegido || checkMatch(body, PAGO_PATTERNS)) {
-          // Si hubo coincidencia de patrón de pago pero no se especificó monto, se envía un mensaje genérico.
-          if (!paqueteElegido) {
-              await sock.sendMessage(from, { text: `Para darte los datos de pago, por favor, *indica el monto exacto* (10, 20, 50, 100 o 200) que deseas comprar. ¡Así te envío el QR al toque! 😉` });
-              continue;
-          }
-          
-          try {
-              // Cargar la imagen del QR (usando la URL de entorno)
-              const qrImageBuffer = await axios.get(QR_IMAGE_URL, { responseType: 'arraybuffer' });
-              const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
+      // --- Manejo de la Lógica de Flujo ---
+      
+      // 1. Detección de comprobante de pago
+      if (body.toLowerCase().includes("comprobante de pago") || body.toLowerCase().includes("ya hice el pago") || body.toLowerCase().includes("ya pague")) {
+        const forwardMessage = `*PAGO PENDIENTE DE ACTIVACIÓN*
+*Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
+*Mensaje:* El cliente ha enviado un comprobante y/o ha avisado de un pago.
+*Solicitud:* Activar créditos para este usuario.`;
 
-              // Generar el mensaje de texto
-              const textMessage = YAPE_PAYMENT_PROMPT
-                  .replace('{{monto}}', paqueteElegido.amount)
-                  .replace('{{creditos}}', paqueteElegido.credits);
-              
-              // Enviar la imagen y el texto en un solo mensaje
-              await sock.sendMessage(from, {
-                  image: qrImage,
-                  caption: textMessage
-              });
-              continue; // Detener el procesamiento
-          } catch (error) {
-              console.error("Error al enviar el mensaje con QR:", error.message);
-              await sock.sendMessage(from, { text: "Lo siento, hubo un problema al generar los datos de pago. Por favor, asegúrate de haber configurado el QR. Si el problema persiste, contacta a soporte." });
-              continue;
-          }
+        await forwardToAdmins(sock, forwardMessage);
+        
+        const giftMessage = "¡Como agradecimiento por tu confianza, te hemos regalado *15 créditos gratuitos* para que pruebes los nuevos servicios! Úsalos, y si te gusta, continúas con nosotros. Mientras activamos tu paquete, ¡disfruta! 🎁";
+        
+        // Respuesta al cliente
+        await sock.sendMessage(from, { text: `¡Recibido! He reenviado tu comprobante a nuestro equipo de soporte para que activen tus créditos de inmediato. Te avisaremos en cuanto estén listos.\n\n${giftMessage}` });
+        continue;
       }
       
-      // ... (Lógica de "comprobante de pago" y reenvío a admin)
-      // ... (Lógica de IA si no hubo coincidencia local/venta)
+      // 2. Respuesta de Paquete (Detectado por monto o nombre)
+      if (paqueteElegido) {
+        try {
+          // Asumimos que el QR_KEY y YAPE_NUM están configurados en .env
+          const qrImageBuffer = await axios.get(process.env[paqueteElegido.qr_key], { responseType: 'arraybuffer' });
+          const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
+
+          // Generar el mensaje de texto
+          const textMessage = YAPE_PROMPT
+            .replace('{{monto}}', paqueteElegido.amount)
+            .replace('{{creditos}}', paqueteElegido.credits)
+            .replace('{{numero_yape}}', process.env[paqueteElegido.yape_num] || "NUMERO_YAPE_NO_CONFIGURADO");
+            
+          // Enviar la imagen y el texto en un solo mensaje
+          await sock.sendMessage(from, {
+            image: qrImage,
+            caption: textMessage
+          });
+          continue;
+        } catch (error) {
+          console.error("Error al enviar el mensaje con QR:", error.message);
+          await sock.sendMessage(from, { text: "Lo siento, hubo un problema al generar los datos de pago. Por favor, asegúrate de que el QR y el número de Yape estén configurados correctamente." });
+          continue;
+        }
+      }
+      
+      // 3. Respuesta Local (Paquetes, Métodos de Pago u otros)
+      if (replyText) {
+          await sock.sendMessage(from, { text: replyText });
+          continue;
+      }
+
+      // 4. Si no hay coincidencia, mensaje de soporte
+      if (!replyText && !paqueteElegido) {
+          const defaultReply = "🤔 Entiendo tu consulta, pero no tengo una respuesta predefinida para eso. Ya envié una alerta a nuestro equipo de soporte con tu mensaje. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello. 💪";
+          
+          await forwardToAdmins(sock, `*MENSAJE NO RESPONDIDO POR BOT*
+*Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
+*Mensaje:* ${body}
+*Acción:* El bot no pudo responder y necesita ayuda.
+`);
+          await sock.sendMessage(from, { text: defaultReply });
+      }
     }
   });
 
   return sock;
 };
 
-// ------------------- Endpoints -------------------
+// ------------------- Nuevos Endpoints para la Interfaz -------------------
 
-app.get("/api/health", (req, res) => {
-    resetInactivityTimer();
-    res.json({ ok: true, status: "alive", time: new Date().toISOString() });
-});
+/**
+ * Endpoint GET para registrar un nuevo usuario referido.
+ * @example /api/v1/user/register?correo=nuevo@gmail.com&referido=usuario10000@gmail.com
+ */
+app.get("/api/v1/user/register", async (req, res) => {
+    const { correo, referido } = req.query;
 
-app.get("/api/session/create", async (req, res) => {
-    resetInactivityTimer();
-    const sessionId = req.query.sessionId || `session_${Date.now()}`;
-    if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
-    res.json({ ok: true, sessionId });
-});
-
-app.get("/api/session/qr", (req, res) => {
-    resetInactivityTimer();
-    const { sessionId } = req.query;
-    if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
-    const s = sessions.get(sessionId);
-    res.json({ ok: true, qr: s.qr, status: s.status });
-});
-
-app.get("/api/session/reset", async (req, res) => {
-    resetInactivityTimer();
-    const { sessionId } = req.query;
-    const sessionDir = path.join("./sessions", sessionId);
-    try {
-      if (sessions.has(sessionId)) {
-        const { sock } = sessions.get(sessionId);
-        if (sock) await sock.end();
-        sessions.delete(sessionId);
-        
-        // Eliminar de users_data.json
-        const userData = loadUserData();
-        delete userData[sessionId];
-        saveUserData(userData);
-      }
-      if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-      res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+    if (!correo || !referido) {
+        return res.status(400).json({ ok: false, error: "Faltan parámetros: 'correo' y 'referido' son obligatorios." });
     }
-});
 
-app.get("/", (req, res) => {
-    resetInactivityTimer();
-    res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" });
-});
+    const message = `
+    🚨 *NUEVO USUARIO REFERIDO* 🚨
 
-// --- NUEVO ENDPOINT (GET): Reenvío de Nuevo Usuario ---
-app.get("/api/webhook/new-user", async (req, res) => {
-    resetInactivityTimer();
-    // Usar req.query para obtener datos en un GET
-    const { correo, referido_por } = req.query;
+    *Correo de Nuevo Usuario:* ${correo}
+    *Referido por:* ${referido}
+    *Fecha de Registro:* ${new Date().toLocaleString('es-PE')}
     
-    if (!correo) {
-        return res.status(400).json({ ok: false, error: "Falta el campo 'correo' en la query." });
-    }
-
-    // Asegurar que la sesión esté cargada (en Fly.io, se cargaría al despertar)
-    const userData = loadUserData();
-    const firstSessionId = Object.keys(userData)[0]; // Obtener el ID de la primera sesión guardada
-    const session = sessions.get(firstSessionId);
-    
-    // Si la sesión no está en Map (sesión activa), intentar crearla desde users_data
-    if (!session && firstSessionId) {
-        console.log(`Intentando reactivar sesión ${firstSessionId}...`);
-        await createAndConnectSocket(firstSessionId);
-        // Esperar un momento para la conexión
-        await wait(2000); 
-    }
-    const activeSession = sessions.get(firstSessionId);
-
-    if (!activeSession || activeSession.status !== "connected") {
-        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado o reactivado para reenviar." });
-    }
-
-    const message = `*🚨 NUEVO REGISTRO EN LA APP 🚨*
-*Correo:* ${correo}
-*Referido por:* ${referido_por || 'N/A'}
-
-_Acción: Contactar y ofrecer paquete de créditos._`;
+    *Acción Requerida:* Validar registro y gestionar comisión/bonificación.
+    `;
 
     try {
-        for (const admin of ADMIN_NUMBERS) {
-            if (admin) await activeSession.sock.sendMessage(admin, { text: message });
+        const session = sessions.values().next().value; // Usar la primera sesión disponible
+        if (session && session.sock) {
+            await forwardToAdmins(session.sock, message);
+        } else {
+            console.warn("No hay sesión de WhatsApp activa para reenviar el mensaje de referido.");
         }
-        res.json({ ok: true, message: "Datos de nuevo usuario reenviados a los encargados." });
+
+        res.json({ ok: true, message: "Registro de referido recibido y reenviado a encargados." });
     } catch (error) {
-        console.error("Error al reenviar datos de nuevo usuario:", error);
-        res.status(500).json({ ok: false, error: "Error al enviar mensaje por WhatsApp." });
+        console.error("Error en /api/v1/user/register:", error);
+        res.status(500).json({ ok: false, error: "Error interno al procesar el registro.", details: error.message });
     }
 });
 
-// --- NUEVO ENDPOINT (GET): Reenvío de Pago Automático ---
-app.get("/api/webhook/payment-received", async (req, res) => {
-    resetInactivityTimer();
-    // Usar req.query para obtener datos en un GET
-    const data = req.query;
-    
-    const requiredFields = ["Nombre Titular Yape", "Correo Electrónico", "WhatsApp", "Monto Pagado (S/)", "Estado", "Créditos Otorgados", "Usuario Firebase UID"];
+/**
+ * Endpoint GET para registrar un pago completado desde la interfaz.
+ * Utiliza GET para un consumo sencillo tipo API, aunque idealmente un pago debería ser POST.
+ * @example /api/v1/payment/complete?nombre_titular=Juan&correo=juan@gmail.com&whatsapp=987654321&monto=10&fecha_pago=2025-10-24&estado=Completado&creditos=60&uid=user12345&fecha_registro=2025-01-01&id_pago=pago999
+ */
+app.get("/api/v1/payment/complete", async (req, res) => {
+    // Usar qs para un mejor manejo de GET con múltiples parámetros
+    const data = req.query; 
+
+    // Lista de campos obligatorios
+    const requiredFields = ['nombre_titular', 'correo', 'whatsapp', 'monto', 'estado', 'creditos', 'uid', 'id_pago'];
     const missingFields = requiredFields.filter(field => !data[field]);
 
     if (missingFields.length > 0) {
-        // En un GET, es mejor devolver 200 si es un test, o 400 si se espera que la data sea completa
-        return res.status(400).json({ ok: false, error: `Faltan campos obligatorios en la query: ${missingFields.join(', ')}` });
+        return res.status(400).json({ ok: false, error: `Faltan parámetros obligatorios: ${missingFields.join(', ')}` });
     }
     
-    // Asegurar que la sesión esté cargada (en Fly.io, se cargaría al despertar)
-    const userData = loadUserData();
-    const firstSessionId = Object.keys(userData)[0]; // Obtener el ID de la primera sesión guardada
-    const session = sessions.get(firstSessionId);
+    // Generar el mensaje de WhatsApp
+    const message = `
+    ✅ *NUEVO PAGO AUTOMÁTICO - INTERFAZ* ✅
 
-    // Si la sesión no está en Map (sesión activa), intentar crearla desde users_data
-    if (!session && firstSessionId) {
-        console.log(`Intentando reactivar sesión ${firstSessionId}...`);
-        await createAndConnectSocket(firstSessionId);
-        // Esperar un momento para la conexión
-        await wait(2000); 
-    }
-    const activeSession = sessions.get(firstSessionId);
+    *ID de Pago:* ${data.id_pago}
+    *Estado:* ${data.estado}
+    *Monto Pagado:* S/${data.monto}
+    *Créditos Otorgados:* ${data.creditos}
 
-    if (!activeSession || activeSession.status !== "connected") {
-        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado o reactivado para reenviar." });
-    }
+    --- *Datos del Cliente* ---
+    *Nombre Titular Yape:* ${data.nombre_titular}
+    *Correo Electrónico:* ${data.correo}
+    *WhatsApp:* ${data.whatsapp}
+    *Usuario Firebase UID:* ${data.uid}
+    *Fecha Pago (Reportada):* ${data.fecha_pago || 'N/A'}
+    *Fecha Registro App (Reportada):* ${data.fecha_registro || 'N/A'}
 
-    const message = `*✅ PAGO RECIBIDO AUTOMÁTICAMENTE ✅*
-
-*Titular:* ${data["Nombre Titular Yape"]}
-*Monto:* S/${data["Monto Pagado (S/)"]}
-*Créditos:* ${data["Créditos Otorgados"]}
-*Estado:* ${data["Estado"]}
-
-*Contacto:* wa.me/${data["WhatsApp"]}
-*Correo:* ${data["Correo Electrónico"]}
-*UID:* ${data["Usuario Firebase UID"]}
-*Fecha Pago:* ${data["Fecha Pago"] || 'N/A'}
-*Fecha Registro App:* ${data["Fecha Registro App"] || 'N/A'}
-*ID:* ${data["ID"] || 'N/A'}`;
+    *Acción Requerida:* Verificación rápida y seguimiento.
+    `;
 
     try {
-        for (const admin of ADMIN_NUMBERS) {
-            if (admin) await activeSession.sock.sendMessage(admin, { text: message });
+        const session = sessions.values().next().value; // Usar la primera sesión disponible
+        if (session && session.sock) {
+            await forwardToAdmins(session.sock, message);
+        } else {
+            console.warn("No hay sesión de WhatsApp activa para reenviar el mensaje de pago.");
         }
-        // Opcional: Enviar una confirmación al cliente si el número de WhatsApp está en formato JID.
-        // await activeSession.sock.sendMessage(`${data["WhatsApp"]}@s.whatsapp.net`, { text: "¡Tu pago ha sido procesado y tus créditos están siendo activados! 🎉" });
-        
-        res.json({ ok: true, message: "Datos de pago reenviados y procesados." });
+
+        res.json({ ok: true, message: "Registro de pago recibido y reenviado a encargados." });
     } catch (error) {
-        console.error("Error al reenviar datos de pago:", error);
-        res.status(500).json({ ok: false, error: "Error al enviar mensaje por WhatsApp." });
+        console.error("Error en /api/v1/payment/complete:", error);
+        res.status(500).json({ ok: false, error: "Error interno al procesar el pago.", details: error.message });
     }
 });
 
+
+// ------------------- Endpoints Existentes -------------------
+// ... (Se mantienen los demás endpoints de salud y gestión de sesión) ...
+
+app.get("/api/health", (req, res) => {
+res.json({ ok: true, status: "alive", time: new Date().toISOString() });
+});
+
+app.get("/api/session/create", async (req, res) => {
+  const sessionId = req.query.sessionId || `session_${Date.now()}`;
+  if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
+  res.json({ ok: true, sessionId });
+});
+
+app.get("/api/session/qr", (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+  const s = sessions.get(sessionId);
+  res.json({ ok: true, qr: s.qr, status: s.status });
+});
+
+app.get("/api/session/send", async (req, res) => {
+  const { sessionId, to, text, is_admin_command } = req.query;
+  const s = sessions.get(sessionId);
+  if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+  try {
+    if (is_admin_command === "true") {
+      await s.sock.sendMessage(to, { text: text });
+      res.json({ ok: true, message: "Comando enviado para procesamiento ✅" });
+    } else {
+      await s.sock.sendMessage(to, { text });
+      res.json({ ok: true, message: "Mensaje enviado ✅" });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/session/reset", async (req, res) => {
+  const { sessionId } = req.query;
+  const sessionDir = path.join("./sessions", sessionId);
+  try {
+    if (sessions.has(sessionId)) {
+      const { sock } = sessions.get(sessionId);
+      if (sock) await sock.end();
+      sessions.delete(sessionId);
+    }
+    if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
+app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
