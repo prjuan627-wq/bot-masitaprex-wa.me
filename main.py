@@ -47,6 +47,7 @@ CORS(app)
 # --- Bucle Asíncrono para Telethon ---
 
 loop = asyncio.new_event_loop()
+# Inicializa el bucle de eventos en un hilo separado
 threading.Thread(
     target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True
 ).start()
@@ -123,7 +124,8 @@ def _extract_video_metadata(message):
         "duration": getattr(video_attr, 'duration', None),
         "mime_type": document.mime_type,
         "size": document.size,
-        "date": message.date.isoformat() if message.date else datetime.utcnow().isoformat(),
+        # Guardar date en formato ISO 8601
+        "date": message.date.isoformat() if message.date else datetime.utcnow().isoformat(), 
         "channel_id": message.chat_id,
         "file_reference": document.file_reference.hex() if document.file_reference else None,
         "file_name": filename
@@ -136,8 +138,12 @@ async def _on_new_message(event):
     
     # 1. Asegurarse de tener las entidades de los bots
     if not BOT_ENTITIES:
-        await _get_bot_entities()
-
+        # Intenta obtener entidades si el cliente está autorizado (por si falla el inicio)
+        if await client.is_user_authorized():
+            await _get_bot_entities()
+        else:
+             return # No procesar si no está autorizado
+    
     # 2. Verificar si el mensaje viene de alguno de los bots de la lista
     sender_is_video_bot = event.sender_id in BOT_ENTITIES
 
@@ -159,7 +165,7 @@ async def _on_new_message(event):
             
             # 4. Agregar a la cola de historial (videos recientes)
             with _messages_lock:
-                # Evitar duplicados (aunque la cola es limitada, es una buena práctica)
+                # Evitar duplicados
                 if not any(msg['id'] == video_metadata['id'] for msg in messages):
                     messages.appendleft(video_metadata)
                     print(f"✨ Video cacheado de {video_metadata['bot_name']}: {video_metadata['caption'][:30]}...")
@@ -196,11 +202,12 @@ async def _ensure_connected_and_entities():
 
 
         except Exception:
-            tracebox.print_exc()
+            # tracebox.print_exc() # Corregido: error tipográfico a 'traceback.print_exc()'
+            traceback.print_exc()
         await asyncio.sleep(300) # Dormir 5 minutos
 
+# Ejecutar la rutina de conexión/mantenimiento en el bucle de Telethon
 asyncio.run_coroutine_threadsafe(_ensure_connected_and_entities(), loop)
-
 
 # --- Rutas HTTP ---
 
@@ -261,7 +268,6 @@ def search_videos():
             try:
                 # Usar client.get_messages con la opción 'search'
                 # Limitamos la búsqueda a los últimos 50 mensajes por bot para evitar timeouts
-                # NOTA: Telethon solo permite 'search' en canales/chats indexados. Si falla, es probable que no esté indexado.
                 messages = await client.get_messages(channel_id, limit=50, search=query)
                 
                 bot_results = []
@@ -314,7 +320,6 @@ def search_videos():
 def download_video(doc_id, filename):
     """
     Ruta para descargar archivos de video usando el ID del documento.
-    El filename es solo para la URL amigable.
     """
     
     # El nombre de archivo real en disco
@@ -328,25 +333,18 @@ def download_video(doc_id, filename):
     # Si no existe, debemos intentar la descarga usando el ID del documento
     async def _download_file():
         try:
-            # Buscamos en la cola de mensajes si tenemos un mensaje con ese doc_id para obtener la entidad de origen
+            # Buscamos en la cola de mensajes si tenemos un mensaje con ese doc_id
             with _messages_lock:
                 video_meta = next((msg for msg in messages if msg['id'] == doc_id), None)
             
-            # Si no está en cache, no importa, Telethon puede descargar con el ID
-            
-            # Creamos un MessageMediaDocument ficticio o usamos el ID del documento
-            # NOTA: Para descargas por document.id es más seguro usar el hash o el file_reference, 
-            # pero document.id a veces funciona si el cliente ha visto el mensaje.
-            # La forma más robusta es encontrar el mensaje original, pero eso es muy lento.
-            
-            # Optaremos por la descarga por ID/referencia. Necesitamos el document.id y file_reference
+            # Optamos por la descarga por ID/referencia. Necesitamos el document.id y file_reference
             
             if video_meta and video_meta.get('file_reference'):
                 # Si tenemos la referencia, usamos el constructor de Document
                 from telethon.tl.types import Document
                 document = Document(
                     id=doc_id,
-                    access_hash=0, # No necesario para download_media si hay file_reference
+                    access_hash=0, # access_hash puede ser 0 si se usa file_reference
                     file_reference=bytes.fromhex(video_meta['file_reference']),
                     date=datetime.now(timezone.utc),
                     mime_type=video_meta['mime_type'],
@@ -361,11 +359,8 @@ def download_video(doc_id, filename):
                 return saved_path
             
             else:
-                 # Si no tenemos la referencia (ej. el video no estaba en el cache reciente), 
-                 # la descarga directa por document.id requiere un Message o InputDocument
-                 # Como fallback, le indicamos al usuario que el archivo no está accesible si no está en cache
-                 # La única forma real de hacer esto bien es descargar el video cuando se busca, no aquí.
-                 print(f"Error: Video {doc_id} no encontrado en cache para descarga o falta file_reference.")
+                 # Si no tenemos la referencia, no se puede descargar de forma fiable.
+                 print(f"Error: Video {doc_id} no encontrado en cache o falta file_reference. No se puede descargar sin él.")
                  return None
 
         except Exception as e:
@@ -380,7 +375,7 @@ def download_video(doc_id, filename):
             # Reintentar enviar el archivo
             return send_from_directory(DOWNLOAD_DIR, local_filename, as_attachment=True, download_name=filename)
         else:
-            return jsonify({"status": "error", "message": "Archivo no accesible o no se pudo descargar."}), 404
+            return jsonify({"status": "error", "message": "Archivo no accesible o no se pudo descargar (referencia de archivo no encontrada)."}), 404
             
     except Exception as e:
         return jsonify({"status": "error", "message": f"Error interno en la descarga: {str(e)}"}), 500
@@ -389,6 +384,9 @@ def download_video(doc_id, filename):
 # ----------------------------------------------------------------------
 # --- Rutas HTTP Base (Login/Status) Mantenidas para la sesión de Telethon ---
 # ----------------------------------------------------------------------
+
+# Variables de estado para el login
+pending_phone = {"phone": None, "sent_at": None}
 
 @app.route("/status")
 def status():
@@ -458,25 +456,30 @@ def code():
     result = run_coro(_sign_in())
     return jsonify(result)
 
-# Login pendiente (Variable de estado para /login y /code)
-pending_phone = {"phone": None, "sent_at": None}
-
 
 # ----------------------------------------------------------------------
-# --- Inicio de la Aplicación ------------------------------------------
+# --- Inicialización del Cliente Telethon (Manejado por Gunicorn) ------
 # ----------------------------------------------------------------------
 
-if __name__ == "__main__":
-    try:
-        run_coro(client.connect())
-        # Intentar iniciar la sesión (si es persistente)
-        if not run_coro(client.is_user_authorized()):
-             run_coro(client.start())
-             
-        run_coro(_get_bot_entities())
-    except Exception:
-        pass
-        
-    print(f"🚀 App corriendo en http://0.0.0.0:{PORT}")
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+# Ejecutar la conexión y el inicio de sesión del cliente al cargar el archivo
+# Esto asegura que Gunicorn tenga la aplicación Flask lista y Telethon en segundo plano.
+print("🚀 Inicializando cliente Telethon y conexión...")
+try:
+    run_coro(client.connect())
+    # Intentar iniciar la sesión (si es persistente)
+    if not run_coro(client.is_user_authorized()):
+        # Solo intentar start() si no está autorizado
+         run_coro(client.start()) 
+         
+    # Resolver entidades al inicio
+    run_coro(_get_bot_entities())
+    print("✅ Cliente Telethon conectado y listo.")
+
+except Exception as e:
+    print(f"❌ Error crítico al iniciar Telethon: {e}")
+    print("La aplicación seguirá ejecutándose, pero las funciones de Telegram no funcionarán.")
+    
+# La aplicación 'app' de Flask es el objeto que Gunicorn buscará y usará para servir las rutas.
+
+# NOTA: La línea app.run(...) ya NO se usa aquí. Gunicorn se encarga de servir la aplicación.
 
